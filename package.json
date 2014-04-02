@@ -13,7 +13,7 @@
 		"test": "nodeunit --reporter=minimal test/tests.js",
 		"updatedb": "node scripts/updatedb.js",
 		"updatedb-debug": "node scripts/updatedb.js debug",
-		"unpackdb": "tar -xvjf /tmp/geoip-lite-data-latest.tar.bz2 || npm run-script updatedb",
+		"unpackdb": "tar -xvzf /tmp/geoip-lite-data-latest.tar.gz || npm run-script updatedb",
 		"postinstall": "npm run-script unpackdb"
 	},
 	"dependencies": {
