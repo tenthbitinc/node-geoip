@@ -5,6 +5,7 @@
 var cp = require('child_process');
 var fs = require('fs');
 var http = require('http');
+var https = require('https');
 var path = require('path');
 var url = require('url');
 var zlib = require('zlib');
@@ -24,6 +25,12 @@ var dataPath = path.join(__dirname, '..', 'data');
 var tmpPath = path.join(__dirname, '..', 'tmp');
 
 var databases = [{
+	type: 'dma', // From https://developers.google.com/adwords/api/docs/appendix/cities-DMAregions
+	url: 'https://www.google.com/fusiontables/exporttable?query=select+*+from+8799064',
+	filename: 'adwords-dma-regions.csv',
+	src: 'adwords-dma-regions.csv',
+	dest: 'adwords-dma-regions.json'
+},{
 	type: 'country',
 	url: 'http://geolite.maxmind.com/download/geoip/database/GeoIPCountryCSV.zip',
 	src: 'GeoIPCountryWhois.csv',
@@ -80,7 +87,8 @@ function CSVtoArray(text) {
     return a;
 }
 
-function fetch(downloadUrl, cb) {
+function fetch(downloadItem, cb) {
+	var downloadUrl = downloadItem.url;
 	function getOptions() {
 		if (process.env.http_proxy) {
 			var options = url.parse(process.env.http_proxy);
@@ -126,12 +134,22 @@ function fetch(downloadUrl, cb) {
 	if (gzip) {
 		fileName = fileName.replace('.gz', '');
 	}
+	if (downloadItem.filename) {
+		fileName = downloadItem.filename;
+	}
 
 	var tmpFile = path.join(tmpPath, fileName);
 
 	mkdir(tmpFile);
 
-	var client = http.get(getOptions(), onResponse);
+	var options = getOptions();
+	var client = null;
+
+	if (options.protocol == 'https:') {
+		client = https.get(options, onResponse);
+	} else {
+		client = http.get(options, onResponse);
+	}
 
 	process.stdout.write('Retrieving ' + fileName + ' ...');
 }
@@ -349,8 +367,9 @@ function processCityDataNames(src, dest, cb) {
 		var city = fields[3];
 		var lat = Math.round(parseFloat(fields[5]) * 10000);
 		var lon = Math.round(parseFloat(fields[6]) * 10000);
+		var dma = fields[7] ? parseInt(fields[7], 10) : 0;
 		var b;
-		var sz = 32;
+		var sz = 34;
 
 		b = new Buffer(sz);
 		b.fill(0);
@@ -358,7 +377,8 @@ function processCityDataNames(src, dest, cb) {
 		b.write(rg, 2);
 		b.writeInt32BE(lat, 4);
 		b.writeInt32BE(lon, 8);
-		b.write(city, 12);
+		b.writeInt16BE(dma, 12);
+		b.write(city, 14);
 
 		fs.writeSync(datFile, b, 0, b.length, null);
 	}
@@ -380,6 +400,45 @@ function processCityDataNames(src, dest, cb) {
 		.on('pipe', cb);
 }
 
+function processDMAData(src, dest, cb) {
+	var lines=0;
+	var dmaIndex = {};
+
+	function processLine(line) {
+		var fields = CSVtoArray(line);
+
+		var dma = parseInt(fields[3], 10);
+		if (!Object.prototype.hasOwnProperty.call(dmaIndex, dma)) {
+			dmaIndex[dma] = fields[2];
+		}
+	}
+
+	var dataFile = path.join(dataPath, dest);
+	var tmpDataFile = path.join(tmpPath, src);
+
+	rimraf(dataFile);
+	mkdir(dataFile);
+
+	process.stdout.write('Processing Data (may take a moment) ...');
+	var tstart = Date.now();
+	var datFile = fs.openSync(dataFile, "w");
+
+	lazy(fs.createReadStream(tmpDataFile))
+		.lines
+		.map(function(byteArray) {
+			return iconv.decode(byteArray, 'latin1');
+		})
+		.skip(1)
+		.map(processLine)
+		.on('pipe', function() {
+			var dmaJSON = JSON.stringify(dmaIndex);
+			var b = new Buffer(dmaJSON, 'utf8');
+			fs.writeSync(datFile, b, 0, b.length, null);
+			console.log(' DONE'.green);
+			cb();
+		});
+}
+
 function processData(type, src, dest, cb) {
 	if (type === 'country') {
 		processCountryData(src, dest, cb);
@@ -390,6 +449,8 @@ function processData(type, src, dest, cb) {
 				cb();
 			});
 		});
+	} else if (type === 'dma') {
+		processDMAData(src, dest, cb);
 	} else {
 		processCityData(src, dest, function() {
 			console.log(' DONE'.green);
@@ -402,7 +463,7 @@ rimraf(tmpPath);
 mkdir(tmpPath);
 
 async.forEachSeries(databases, function(database, nextDatabase) {
-	fetch(database.url, function(tmpFile, tmpFileName) {
+	fetch(database, function(tmpFile, tmpFileName) {
 		extract(tmpFile, tmpFileName, function() {
 			processData(database.type, database.src, database.dest, function() {
 				console.log();
